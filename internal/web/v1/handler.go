@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -117,8 +118,13 @@ func ListNotifications(c *gin.Context) {
 	c.JSON(http.StatusOK, notifications)
 }
 
-// GetNotification handles GET /api/v1/notifications/:id
-func GetNotification(c *gin.Context) {
+// handleNotificationByID is a shared handler for operations on a single notification by ID.
+// It extracts common boilerplate (span setup, ID extraction, error handling) to avoid duplication.
+func handleNotificationByID(
+	c *gin.Context,
+	action func(ctx context.Context, id string) (*domain.Notification, error),
+	successLog string,
+) {
 	ctx, span := middleware.StartSpan(c.Request.Context(), "http.request", trace.WithAttributes(
 		attribute.String("layer", "web"),
 		attribute.String("api.version", "v1"),
@@ -131,10 +137,10 @@ func GetNotification(c *gin.Context) {
 	id := c.Param("id")
 	span.SetAttributes(attribute.String("notification.id", id))
 
-	notification, err := notificationService.GetNotification(ctx, id)
+	notification, err := action(ctx, id)
 	if err != nil {
 		span.RecordError(err)
-		zapLogger.Error("Failed to get notification", zap.Error(err))
+		zapLogger.Error(successLog+" failed", zap.Error(err))
 
 		switch {
 		case errors.Is(err, logicv1.ErrNotificationNotFound):
@@ -145,38 +151,16 @@ func GetNotification(c *gin.Context) {
 		return
 	}
 
-	zapLogger.Info("Notification retrieved", zap.String("notification_id", id))
+	zapLogger.Info(successLog, zap.String("notification_id", id))
 	c.JSON(http.StatusOK, notification)
+}
+
+// GetNotification handles GET /api/v1/notifications/:id
+func GetNotification(c *gin.Context) {
+	handleNotificationByID(c, notificationService.GetNotification, "Notification retrieved")
 }
 
 // MarkAsRead handles PATCH /api/v1/notifications/:id
 func MarkAsRead(c *gin.Context) {
-	ctx, span := middleware.StartSpan(c.Request.Context(), "http.request", trace.WithAttributes(
-		attribute.String("layer", "web"),
-		attribute.String("api.version", "v1"),
-		attribute.String("method", c.Request.Method),
-		attribute.String("path", c.Request.URL.Path),
-	))
-	defer span.End()
-
-	zapLogger := middleware.GetLoggerFromGinContext(c)
-	id := c.Param("id")
-	span.SetAttributes(attribute.String("notification.id", id))
-
-	notification, err := notificationService.MarkAsRead(ctx, id)
-	if err != nil {
-		span.RecordError(err)
-		zapLogger.Error("Failed to mark notification as read", zap.Error(err))
-
-		switch {
-		case errors.Is(err, logicv1.ErrNotificationNotFound):
-			c.JSON(http.StatusNotFound, gin.H{"error": "Notification not found"})
-		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
-		}
-		return
-	}
-
-	zapLogger.Info("Notification marked as read", zap.String("notification_id", id))
-	c.JSON(http.StatusOK, notification)
+	handleNotificationByID(c, notificationService.MarkAsRead, "Notification marked as read")
 }

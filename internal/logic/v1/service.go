@@ -29,9 +29,9 @@ func (s *NotificationService) SendEmail(ctx context.Context, req domain.SendEmai
 	defer span.End()
 
 	// Get database connection
-	db := database.GetDB()
+	db := database.GetPool()
 	if db == nil {
-		return nil, fmt.Errorf("database connection not available")
+		return nil, errors.New("database connection not available")
 	}
 
 	// Validate recipient
@@ -74,9 +74,9 @@ func (s *NotificationService) SendSMS(ctx context.Context, req domain.SendSMSReq
 	defer span.End()
 
 	// Get database connection
-	db := database.GetDB()
+	db := database.GetPool()
 	if db == nil {
-		return nil, fmt.Errorf("database connection not available")
+		return nil, errors.New("database connection not available")
 	}
 
 	// TODO: Extract user_id from phone number or JWT token
@@ -113,9 +113,9 @@ func (s *NotificationService) ListNotifications(ctx context.Context, userID stri
 	))
 	defer span.End()
 
-	db := database.GetDB()
+	db := database.GetPool()
 	if db == nil {
-		return nil, fmt.Errorf("database connection not available")
+		return nil, errors.New("database connection not available")
 	}
 
 	// Use provided userID or default to "1"
@@ -185,9 +185,9 @@ func (s *NotificationService) GetNotification(ctx context.Context, id string) (*
 	))
 	defer span.End()
 
-	db := database.GetDB()
+	db := database.GetPool()
 	if db == nil {
-		return nil, fmt.Errorf("database connection not available")
+		return nil, errors.New("database connection not available")
 	}
 
 	notificationID, err := strconv.Atoi(id)
@@ -242,9 +242,9 @@ func (s *NotificationService) MarkAsRead(ctx context.Context, id string) (*domai
 	))
 	defer span.End()
 
-	db := database.GetDB()
+	db := database.GetPool()
 	if db == nil {
-		return nil, fmt.Errorf("database connection not available")
+		return nil, errors.New("database connection not available")
 	}
 
 	notificationID, err := strconv.Atoi(id)

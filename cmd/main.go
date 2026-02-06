@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os/signal"
 	"sync/atomic"
@@ -19,18 +20,16 @@ import (
 )
 
 func main() {
-	// Load configuration from environment variables (with .env file support for local dev)
 	cfg := config.Load()
 	if err := cfg.Validate(); err != nil {
 		panic("Configuration validation failed: " + err.Error())
 	}
 
-	// Initialize structured logger
 	logger, err := middleware.NewLogger()
 	if err != nil {
 		panic("Failed to initialize logger: " + err.Error())
 	}
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	logger.Info("Service starting",
 		zap.String("service", cfg.Service.Name),
@@ -39,64 +38,62 @@ func main() {
 		zap.String("port", cfg.Service.Port),
 	)
 
-	// Initialize OpenTelemetry tracing with centralized config
-	var tp interface{ Shutdown(context.Context) error }
-	if cfg.Tracing.Enabled {
-		tp, err = middleware.InitTracing(cfg)
-		if err != nil {
-			logger.Warn("Failed to initialize tracing", zap.Error(err))
-		} else {
-			logger.Info("Tracing initialized",
-				zap.String("endpoint", cfg.Tracing.Endpoint),
-				zap.Float64("sample_rate", cfg.Tracing.SampleRate),
-			)
-		}
-	} else {
-		logger.Info("Tracing disabled (TRACING_ENABLED=false)")
-	}
+	tp := initTracing(cfg, logger)
 
-	// Initialize Pyroscope profiling
-	if cfg.Profiling.Enabled {
-		if err := middleware.InitProfiling(); err != nil {
-			logger.Warn("Failed to initialize profiling", zap.Error(err))
-		} else {
-			logger.Info("Profiling initialized",
-				zap.String("endpoint", cfg.Profiling.Endpoint),
-			)
-			defer middleware.StopProfiling()
-		}
-	} else {
-		logger.Info("Profiling disabled (PROFILING_ENABLED=false)")
-	}
+	initProfiling(cfg, logger)
 
-	// Initialize database connection pool (pgx)
 	pool, err := database.Connect(context.Background())
 	if err != nil {
-		logger.Fatal("Failed to connect to database", zap.Error(err))
+		logger.Error("Failed to connect to database", zap.Error(err))
+		return
 	}
 	defer pool.Close()
 	logger.Info("Database connection pool established")
 
+	var isShuttingDown atomic.Bool
+	srv := setupServer(cfg, logger, &isShuttingDown)
+	runGracefulShutdown(cfg, srv, tp, pool, logger, &isShuttingDown)
+}
+
+func initTracing(cfg *config.Config, logger *zap.Logger) interface{ Shutdown(context.Context) error } {
+	if !cfg.Tracing.Enabled {
+		logger.Info("Tracing disabled (TRACING_ENABLED=false)")
+		return nil
+	}
+	tp, err := middleware.InitTracing(cfg)
+	if err != nil {
+		logger.Warn("Failed to initialize tracing", zap.Error(err))
+		return nil
+	}
+	logger.Info("Tracing initialized",
+		zap.String("endpoint", cfg.Tracing.Endpoint),
+		zap.Float64("sample_rate", cfg.Tracing.SampleRate),
+	)
+	return tp
+}
+
+func initProfiling(cfg *config.Config, logger *zap.Logger) {
+	if !cfg.Profiling.Enabled {
+		logger.Info("Profiling disabled (PROFILING_ENABLED=false)")
+		return
+	}
+	if err := middleware.InitProfiling(); err != nil {
+		logger.Warn("Failed to initialize profiling", zap.Error(err))
+		return
+	}
+	logger.Info("Profiling initialized", zap.String("endpoint", cfg.Profiling.Endpoint))
+}
+
+func setupServer(cfg *config.Config, logger *zap.Logger, isShuttingDown *atomic.Bool) *http.Server {
 	r := gin.Default()
 
-	var isShuttingDown atomic.Bool
-
-	// Tracing middleware (must be first for context propagation)
 	r.Use(middleware.TracingMiddleware())
-
-	// Logging middleware (must be before Prometheus middleware)
 	r.Use(middleware.LoggingMiddleware(logger))
-
-	// Prometheus middleware
 	r.Use(middleware.PrometheusMiddleware())
 
-	// Health check
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
-
-	// Readiness check
-	// Returns 503 once shutdown has started, to drain traffic before HTTP shutdown.
 	r.GET("/ready", func(c *gin.Context) {
 		if isShuttingDown.Load() {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "shutting_down"})
@@ -104,11 +101,8 @@ func main() {
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
-
-	// Metrics endpoint
 	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
-	// API v1 (canonical API - frontend-aligned)
 	apiV1 := r.Group("/api/v1")
 	{
 		apiV1.POST("/notify/email", v1.SendEmail)
@@ -118,59 +112,56 @@ func main() {
 		apiV1.PATCH("/notifications/:id", v1.MarkAsRead)
 	}
 
-	// Create HTTP server
-	srv := &http.Server{
-		Addr:    ":" + cfg.Service.Port,
-		Handler: r,
+	return &http.Server{
+		Addr:              ":" + cfg.Service.Port,
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
+}
 
-	// Start server in a goroutine
+func runGracefulShutdown(
+	cfg *config.Config,
+	srv *http.Server,
+	tp interface{ Shutdown(context.Context) error },
+	pool interface{ Close() },
+	logger *zap.Logger,
+	isShuttingDown *atomic.Bool,
+) {
 	go func() {
 		logger.Info("Starting notification service", zap.String("port", cfg.Service.Port))
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Fatal("Failed to start server", zap.Error(err))
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("Failed to start server", zap.Error(err))
 		}
 	}()
 
-	// Graceful shutdown - modern signal handling with context
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	// Wait for shutdown signal
 	<-ctx.Done()
 	logger.Info("Shutdown signal received")
 
-	// Fail readiness first and wait for propagation (best practice for K8s rollout).
 	isShuttingDown.Store(true)
 	drainDelay := cfg.GetReadinessDrainDelayDuration()
 	if drainDelay > 0 {
 		logger.Info("Readiness drain delay started", zap.Duration("delay", drainDelay))
 		time.Sleep(drainDelay)
-		logger.Info("Readiness drain delay completed", zap.Duration("delay", drainDelay))
 	}
 
-	// Shutdown context with configurable timeout
 	shutdownTimeout := cfg.GetShutdownTimeoutDuration()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
 	logger.Info("Shutting down server...", zap.Duration("timeout", shutdownTimeout))
 
-	// Explicit cleanup sequence: HTTP Server → Database → Tracer
-	// This ensures predictable shutdown order and easier debugging
-
-	// 1. Shutdown HTTP server (stop accepting new connections, wait for in-flight requests)
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Error("HTTP server shutdown error", zap.Error(err))
 	} else {
 		logger.Info("HTTP server shutdown complete")
 	}
 
-	// 2. Close database connections (explicit cleanup + defer for safety)
 	pool.Close()
 	logger.Info("Database pool closed")
 
-	// 3. Shutdown tracer (flush pending spans)
 	if tp != nil {
 		if err := tp.Shutdown(shutdownCtx); err != nil {
 			logger.Error("Tracer shutdown error", zap.Error(err))
@@ -179,5 +170,6 @@ func main() {
 		}
 	}
 
+	middleware.StopProfiling()
 	logger.Info("Graceful shutdown complete")
 }
