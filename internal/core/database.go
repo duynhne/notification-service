@@ -2,7 +2,9 @@ package database
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 
@@ -36,16 +38,16 @@ func LoadConfig() (*DatabaseConfig, error) {
 	}
 
 	if cfg.Host == "" {
-		return nil, fmt.Errorf("DB_HOST environment variable is required")
+		return nil, errors.New("DB_HOST environment variable is required")
 	}
 	if cfg.Name == "" {
-		return nil, fmt.Errorf("DB_NAME environment variable is required")
+		return nil, errors.New("DB_NAME environment variable is required")
 	}
 	if cfg.User == "" {
-		return nil, fmt.Errorf("DB_USER environment variable is required")
+		return nil, errors.New("DB_USER environment variable is required")
 	}
 	if cfg.Password == "" {
-		return nil, fmt.Errorf("DB_PASSWORD environment variable is required")
+		return nil, errors.New("DB_PASSWORD environment variable is required")
 	}
 
 	return cfg, nil
@@ -53,8 +55,9 @@ func LoadConfig() (*DatabaseConfig, error) {
 
 // BuildDSN constructs PostgreSQL connection string (DSN) from config.
 func (c *DatabaseConfig) BuildDSN() string {
-	return fmt.Sprintf("postgresql://%s:%s@%s:%s/%s?sslmode=%s&pool_max_conns=%d",
-		c.User, c.Password, c.Host, c.Port, c.Name, c.SSLMode, c.MaxConnections,
+	hostPort := net.JoinHostPort(c.Host, c.Port)
+	return fmt.Sprintf("postgresql://%s:%s@%s/%s?sslmode=%s&pool_max_conns=%d",
+		c.User, c.Password, hostPort, c.Name, c.SSLMode, c.MaxConnections,
 	)
 }
 
@@ -104,8 +107,9 @@ func GetPool() *pgxpool.Pool {
 	return globalPool
 }
 
-// GetDB is an alias for GetPool() - provided for backward compatibility
-// Deprecated: Use GetPool() for new code
+// GetDB is an alias for GetPool() - provided for backward compatibility.
+//
+// Deprecated: Use GetPool() for new code.
 func GetDB() *pgxpool.Pool {
 	return globalPool
 }
