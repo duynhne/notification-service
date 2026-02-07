@@ -53,6 +53,9 @@ func (r *NotificationRepository) Create(ctx context.Context, notification *domai
 		title = notification.Message
 	}
 	message := notification.Message
+	if message == "" {
+		message = title
+	}
 
 	err := db.QueryRow(ctx, query, userID, title, message, notification.Type, false).Scan(&id, &createdAt)
 	if err != nil {
