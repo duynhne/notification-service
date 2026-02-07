@@ -108,6 +108,7 @@ func setupServer(cfg *config.Config, logger *zap.Logger, isShuttingDown *atomic.
 		apiV1.POST("/notify/email", v1.SendEmail)
 		apiV1.POST("/notify/sms", v1.SendSMS)
 		apiV1.GET("/notifications", v1.ListNotifications)
+		apiV1.GET("/notifications/count", v1.GetUnreadCount)
 		apiV1.GET("/notifications/:id", v1.GetNotification)
 		apiV1.PATCH("/notifications/:id", v1.MarkAsRead)
 	}

@@ -7,10 +7,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	database "github.com/duynhne/notification-service/internal/core"
 	"github.com/duynhne/notification-service/internal/core/domain"
 	"github.com/duynhne/notification-service/middleware"
+	"github.com/jackc/pgx/v5"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -266,4 +266,35 @@ func (s *NotificationService) MarkAsRead(ctx context.Context, id string) (*domai
 
 	// Return updated notification
 	return s.GetNotification(ctx, id)
+}
+
+// CountUnread returns unread notification count for a user
+func (s *NotificationService) CountUnread(ctx context.Context, userID string) (int, error) {
+	ctx, span := middleware.StartSpan(ctx, "notification.count_unread", trace.WithAttributes(
+		attribute.String("layer", "logic"),
+		attribute.String("api.version", "v1"),
+		attribute.String("user_id", userID),
+	))
+	defer span.End()
+
+	// Security: Validate userID - reject empty or invalid input
+	if userID == "" {
+		return 0, errors.New("user_id is required")
+	}
+	uid, err := strconv.Atoi(userID)
+	if err != nil || uid <= 0 {
+		span.RecordError(fmt.Errorf("invalid user_id: %s", userID))
+		return 0, fmt.Errorf("invalid user_id: %s", userID)
+	}
+
+	// Use repository for database access (proper 3-layer architecture)
+	repo := database.NewNotificationRepository()
+	count, err := repo.CountUnreadByUserID(ctx, uid)
+	if err != nil {
+		span.RecordError(err)
+		return 0, err
+	}
+
+	span.SetAttributes(attribute.Int("notifications.unread_count", count))
+	return count, nil
 }

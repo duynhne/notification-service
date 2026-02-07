@@ -164,3 +164,36 @@ func GetNotification(c *gin.Context) {
 func MarkAsRead(c *gin.Context) {
 	handleNotificationByID(c, notificationService.MarkAsRead, "Notification marked as read")
 }
+
+// GetUnreadCount handles GET /api/v1/notifications/count
+func GetUnreadCount(c *gin.Context) {
+	ctx, span := middleware.StartSpan(c.Request.Context(), "http.request", trace.WithAttributes(
+		attribute.String("layer", "web"),
+		attribute.String("api.version", "v1"),
+		attribute.String("method", c.Request.Method),
+		attribute.String("path", c.Request.URL.Path),
+	))
+	defer span.End()
+
+	zapLogger := middleware.GetLoggerFromGinContext(c)
+
+	// Security: Require valid user_id from auth middleware
+	userID := c.GetString("user_id")
+	if userID == "" {
+		span.SetAttributes(attribute.Bool("auth.missing", true))
+		zapLogger.Warn("Missing user_id in request context")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+
+	count, err := notificationService.CountUnread(ctx, userID)
+	if err != nil {
+		span.RecordError(err)
+		zapLogger.Error("Failed to count unread notifications", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		return
+	}
+
+	zapLogger.Info("Unread count retrieved", zap.Int("count", count))
+	c.JSON(http.StatusOK, gin.H{"count": count})
+}
