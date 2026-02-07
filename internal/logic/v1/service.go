@@ -5,20 +5,21 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"time"
 
-	database "github.com/duynhne/notification-service/internal/core"
 	"github.com/duynhne/notification-service/internal/core/domain"
 	"github.com/duynhne/notification-service/middleware"
-	"github.com/jackc/pgx/v5"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
 
-type NotificationService struct{}
+type NotificationService struct {
+	repo domain.NotificationRepository
+}
 
-func NewNotificationService() *NotificationService {
-	return &NotificationService{}
+func NewNotificationService(repo domain.NotificationRepository) *NotificationService {
+	return &NotificationService{
+		repo: repo,
+	}
 }
 
 func (s *NotificationService) SendEmail(ctx context.Context, req domain.SendEmailRequest) (*domain.Notification, error) {
@@ -27,12 +28,6 @@ func (s *NotificationService) SendEmail(ctx context.Context, req domain.SendEmai
 		attribute.String("to", req.To),
 	))
 	defer span.End()
-
-	// Get database connection
-	db := database.GetPool()
-	if db == nil {
-		return nil, errors.New("database connection not available")
-	}
 
 	// Validate recipient
 	if req.To == "" || req.To == "invalid" {
@@ -44,20 +39,17 @@ func (s *NotificationService) SendEmail(ctx context.Context, req domain.SendEmai
 	// For now, use mock user_id = 1
 	userID := 1
 
-	// Insert notification into database
-	insertQuery := `INSERT INTO notifications (user_id, title, message, type, read) VALUES ($1, $2, $3, $4, $5) RETURNING id`
-	var notificationID int
-	err := db.QueryRow(ctx, insertQuery, userID, req.Subject, req.Body, "email", false).Scan(&notificationID)
-	if err != nil {
-		span.RecordError(err)
-		return nil, fmt.Errorf("insert notification: %w", err)
+	notification := &domain.Notification{
+		Type:    "email",
+		Message: req.Subject, // Using subject as message/title
+		Title:   req.Subject,
 	}
 
-	notification := &domain.Notification{
-		ID:      strconv.Itoa(notificationID),
-		Type:    "email",
-		Message: req.Subject,
-		Status:  "sent",
+	// Insert using repository
+	err := s.repo.Create(ctx, notification, userID)
+	if err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("create notification: %w", err)
 	}
 
 	span.SetAttributes(attribute.Bool("email.sent", true))
@@ -73,29 +65,20 @@ func (s *NotificationService) SendSMS(ctx context.Context, req domain.SendSMSReq
 	))
 	defer span.End()
 
-	// Get database connection
-	db := database.GetPool()
-	if db == nil {
-		return nil, errors.New("database connection not available")
-	}
-
 	// TODO: Extract user_id from phone number or JWT token
 	userID := 1
 
-	// Insert notification
-	insertQuery := `INSERT INTO notifications (user_id, title, message, type, read) VALUES ($1, $2, $3, $4, $5) RETURNING id`
-	var notificationID int
-	err := db.QueryRow(ctx, insertQuery, userID, "SMS", req.Message, "sms", false).Scan(&notificationID)
-	if err != nil {
-		span.RecordError(err)
-		return nil, fmt.Errorf("insert notification: %w", err)
-	}
-
 	notification := &domain.Notification{
-		ID:      strconv.Itoa(notificationID),
 		Type:    "sms",
 		Message: req.Message,
-		Status:  "sent",
+		Title:   "SMS",
+	}
+
+	// Insert using repository
+	err := s.repo.Create(ctx, notification, userID)
+	if err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("create notification: %w", err)
 	}
 
 	span.SetAttributes(attribute.Bool("sms.sent", true))
@@ -113,11 +96,6 @@ func (s *NotificationService) ListNotifications(ctx context.Context, userID stri
 	))
 	defer span.End()
 
-	db := database.GetPool()
-	if db == nil {
-		return nil, errors.New("database connection not available")
-	}
-
 	// Use provided userID or default to "1"
 	uid := 1
 	if userID != "" {
@@ -126,53 +104,16 @@ func (s *NotificationService) ListNotifications(ctx context.Context, userID stri
 		}
 	}
 
-	query := `SELECT id, user_id, title, message, type, read, created_at FROM notifications WHERE user_id = $1 ORDER BY created_at DESC`
-	rows, err := db.Query(ctx, query, uid)
+	notifications, err := s.repo.ListByUserID(ctx, uid)
 	if err != nil {
 		span.RecordError(err)
-		return nil, fmt.Errorf("query notifications: %w", err)
-	}
-	defer rows.Close()
-
-	var notifications []domain.Notification
-	for rows.Next() {
-		var notificationID, dbUserID int
-		var title, message, notifType *string
-		var read bool
-		var createdAt time.Time
-
-		err := rows.Scan(&notificationID, &dbUserID, &title, &message, &notifType, &read, &createdAt)
-		if err != nil {
-			span.RecordError(err)
-			continue
-		}
-
-		notif := domain.Notification{
-			ID:        strconv.Itoa(notificationID),
-			Status:    "sent",
-			Read:      read,
-			CreatedAt: createdAt.Format(time.RFC3339),
-		}
-		if title != nil {
-			notif.Title = *title
-			notif.Message = *title // For backward compat, use title as message if no separate message
-		}
-		if message != nil && *message != "" {
-			notif.Message = *message
-		}
-		if notifType != nil {
-			notif.Type = *notifType
-		}
-
-		notifications = append(notifications, notif)
-	}
-
-	if err = rows.Err(); err != nil {
-		span.RecordError(err)
-		return nil, fmt.Errorf("scan notifications: %w", err)
+		return nil, err
 	}
 
 	span.SetAttributes(attribute.Int("notifications.count", len(notifications)))
+	if notifications == nil {
+		return []domain.Notification{}, nil
+	}
 	return notifications, nil
 }
 
@@ -185,48 +126,21 @@ func (s *NotificationService) GetNotification(ctx context.Context, id string) (*
 	))
 	defer span.End()
 
-	db := database.GetPool()
-	if db == nil {
-		return nil, errors.New("database connection not available")
-	}
-
 	notificationID, err := strconv.Atoi(id)
 	if err != nil {
 		span.SetAttributes(attribute.Bool("notification.found", false))
 		return nil, fmt.Errorf("invalid notification id %q: %w", id, ErrNotificationNotFound)
 	}
 
-	query := `SELECT id, user_id, title, message, type, read, created_at FROM notifications WHERE id = $1`
-	var userID int
-	var title, message, notifType *string
-	var read bool
-	var createdAt time.Time
-
-	err = db.QueryRow(ctx, query, notificationID).Scan(&notificationID, &userID, &title, &message, &notifType, &read, &createdAt)
+	notification, err := s.repo.FindByID(ctx, notificationID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			span.SetAttributes(attribute.Bool("notification.found", false))
-			return nil, fmt.Errorf("get notification by id %q: %w", id, ErrNotificationNotFound)
-		}
 		span.RecordError(err)
-		return nil, fmt.Errorf("query notification: %w", err)
+		return nil, err
 	}
 
-	notification := &domain.Notification{
-		ID:        strconv.Itoa(notificationID),
-		Status:    "sent",
-		Read:      read,
-		CreatedAt: createdAt.Format(time.RFC3339),
-	}
-	if title != nil {
-		notification.Title = *title
-		notification.Message = *title
-	}
-	if message != nil && *message != "" {
-		notification.Message = *message
-	}
-	if notifType != nil {
-		notification.Type = *notifType
+	if notification == nil {
+		span.SetAttributes(attribute.Bool("notification.found", false))
+		return nil, fmt.Errorf("get notification by id %q: %w", id, ErrNotificationNotFound)
 	}
 
 	span.SetAttributes(attribute.Bool("notification.found", true))
@@ -242,25 +156,21 @@ func (s *NotificationService) MarkAsRead(ctx context.Context, id string) (*domai
 	))
 	defer span.End()
 
-	db := database.GetPool()
-	if db == nil {
-		return nil, errors.New("database connection not available")
-	}
-
 	notificationID, err := strconv.Atoi(id)
 	if err != nil {
 		return nil, fmt.Errorf("invalid notification id %q: %w", id, ErrNotificationNotFound)
 	}
 
-	// Update notification to read
-	updateQuery := `UPDATE notifications SET read = true WHERE id = $1`
-	result, err := db.Exec(ctx, updateQuery, notificationID)
+	updated, err := s.repo.MarkAsRead(ctx, notificationID)
 	if err != nil {
 		span.RecordError(err)
-		return nil, fmt.Errorf("update notification: %w", err)
+		return nil, err
 	}
 
-	if result.RowsAffected() == 0 {
+	if !updated {
+		// Either didn't exist or was already read (though logic suggests existence check)
+		// For now, treat as not found or nothing to update
+		// To match previous logic, check if it exists or generic not found
 		return nil, fmt.Errorf("notification id %q: %w", id, ErrNotificationNotFound)
 	}
 
@@ -288,8 +198,7 @@ func (s *NotificationService) CountUnread(ctx context.Context, userID string) (i
 	}
 
 	// Use repository for database access (proper 3-layer architecture)
-	repo := database.NewNotificationRepository()
-	count, err := repo.CountUnreadByUserID(ctx, uid)
+	count, err := s.repo.CountUnreadByUserID(ctx, uid)
 	if err != nil {
 		span.RecordError(err)
 		return 0, err

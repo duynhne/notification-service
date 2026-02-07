@@ -14,9 +14,15 @@ import (
 	"go.uber.org/zap"
 )
 
-var notificationService = logicv1.NewNotificationService()
+type Handler struct {
+	service *logicv1.NotificationService
+}
 
-func SendEmail(c *gin.Context) {
+func NewHandler(service *logicv1.NotificationService) *Handler {
+	return &Handler{service: service}
+}
+
+func (h *Handler) SendEmail(c *gin.Context) {
 	ctx, span := middleware.StartSpan(c.Request.Context(), "http.request", trace.WithAttributes(
 		attribute.String("layer", "web"),
 		attribute.String("method", c.Request.Method),
@@ -36,7 +42,7 @@ func SendEmail(c *gin.Context) {
 	}
 
 	span.SetAttributes(attribute.Bool("request.valid", true))
-	notification, err := notificationService.SendEmail(ctx, req)
+	notification, err := h.service.SendEmail(ctx, req)
 	if err != nil {
 		span.RecordError(err)
 		zapLogger.Error("Failed to send email", zap.Error(err))
@@ -56,7 +62,7 @@ func SendEmail(c *gin.Context) {
 	c.JSON(http.StatusOK, notification)
 }
 
-func SendSMS(c *gin.Context) {
+func (h *Handler) SendSMS(c *gin.Context) {
 	ctx, span := middleware.StartSpan(c.Request.Context(), "http.request", trace.WithAttributes(
 		attribute.String("layer", "web"),
 		attribute.String("method", c.Request.Method),
@@ -76,7 +82,7 @@ func SendSMS(c *gin.Context) {
 	}
 
 	span.SetAttributes(attribute.Bool("request.valid", true))
-	notification, err := notificationService.SendSMS(ctx, req)
+	notification, err := h.service.SendSMS(ctx, req)
 	if err != nil {
 		span.RecordError(err)
 		zapLogger.Error("Failed to send SMS", zap.Error(err))
@@ -89,7 +95,7 @@ func SendSMS(c *gin.Context) {
 }
 
 // ListNotifications handles GET /api/v1/notifications
-func ListNotifications(c *gin.Context) {
+func (h *Handler) ListNotifications(c *gin.Context) {
 	ctx, span := middleware.StartSpan(c.Request.Context(), "http.request", trace.WithAttributes(
 		attribute.String("layer", "web"),
 		attribute.String("api.version", "v1"),
@@ -106,7 +112,7 @@ func ListNotifications(c *gin.Context) {
 		userID = "1"
 	}
 
-	notifications, err := notificationService.ListNotifications(ctx, userID)
+	notifications, err := h.service.ListNotifications(ctx, userID)
 	if err != nil {
 		span.RecordError(err)
 		zapLogger.Error("Failed to list notifications", zap.Error(err))
@@ -120,7 +126,7 @@ func ListNotifications(c *gin.Context) {
 
 // handleNotificationByID is a shared handler for operations on a single notification by ID.
 // It extracts common boilerplate (span setup, ID extraction, error handling) to avoid duplication.
-func handleNotificationByID(
+func (h *Handler) handleNotificationByID(
 	c *gin.Context,
 	action func(ctx context.Context, id string) (*domain.Notification, error),
 	successLog string,
@@ -156,17 +162,17 @@ func handleNotificationByID(
 }
 
 // GetNotification handles GET /api/v1/notifications/:id
-func GetNotification(c *gin.Context) {
-	handleNotificationByID(c, notificationService.GetNotification, "Notification retrieved")
+func (h *Handler) GetNotification(c *gin.Context) {
+	h.handleNotificationByID(c, h.service.GetNotification, "Notification retrieved")
 }
 
 // MarkAsRead handles PATCH /api/v1/notifications/:id
-func MarkAsRead(c *gin.Context) {
-	handleNotificationByID(c, notificationService.MarkAsRead, "Notification marked as read")
+func (h *Handler) MarkAsRead(c *gin.Context) {
+	h.handleNotificationByID(c, h.service.MarkAsRead, "Notification marked as read")
 }
 
 // GetUnreadCount handles GET /api/v1/notifications/count
-func GetUnreadCount(c *gin.Context) {
+func (h *Handler) GetUnreadCount(c *gin.Context) {
 	ctx, span := middleware.StartSpan(c.Request.Context(), "http.request", trace.WithAttributes(
 		attribute.String("layer", "web"),
 		attribute.String("api.version", "v1"),
@@ -186,7 +192,7 @@ func GetUnreadCount(c *gin.Context) {
 		return
 	}
 
-	count, err := notificationService.CountUnread(ctx, userID)
+	count, err := h.service.CountUnread(ctx, userID)
 	if err != nil {
 		span.RecordError(err)
 		zapLogger.Error("Failed to count unread notifications", zap.Error(err))
