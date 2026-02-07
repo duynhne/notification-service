@@ -15,7 +15,8 @@ import (
 
 	"github.com/duynhne/notification-service/config"
 	database "github.com/duynhne/notification-service/internal/core"
-	v1 "github.com/duynhne/notification-service/internal/web/v1"
+	logicv1 "github.com/duynhne/notification-service/internal/logic/v1"
+	webv1 "github.com/duynhne/notification-service/internal/web/v1"
 	"github.com/duynhne/notification-service/middleware"
 )
 
@@ -50,8 +51,13 @@ func main() {
 	defer pool.Close()
 	logger.Info("Database connection pool established")
 
+	// Dependency Injection
+	repo := database.NewNotificationRepository()
+	service := logicv1.NewNotificationService(repo)
+	handler := webv1.NewHandler(service)
+
 	var isShuttingDown atomic.Bool
-	srv := setupServer(cfg, logger, &isShuttingDown)
+	srv := setupServer(cfg, logger, &isShuttingDown, handler)
 	runGracefulShutdown(cfg, srv, tp, pool, logger, &isShuttingDown)
 }
 
@@ -84,7 +90,7 @@ func initProfiling(cfg *config.Config, logger *zap.Logger) {
 	logger.Info("Profiling initialized", zap.String("endpoint", cfg.Profiling.Endpoint))
 }
 
-func setupServer(cfg *config.Config, logger *zap.Logger, isShuttingDown *atomic.Bool) *http.Server {
+func setupServer(cfg *config.Config, logger *zap.Logger, isShuttingDown *atomic.Bool, handler *webv1.Handler) *http.Server {
 	r := gin.Default()
 
 	r.Use(middleware.TracingMiddleware())
@@ -105,11 +111,12 @@ func setupServer(cfg *config.Config, logger *zap.Logger, isShuttingDown *atomic.
 
 	apiV1 := r.Group("/api/v1")
 	{
-		apiV1.POST("/notify/email", v1.SendEmail)
-		apiV1.POST("/notify/sms", v1.SendSMS)
-		apiV1.GET("/notifications", v1.ListNotifications)
-		apiV1.GET("/notifications/:id", v1.GetNotification)
-		apiV1.PATCH("/notifications/:id", v1.MarkAsRead)
+		apiV1.POST("/notify/email", handler.SendEmail)
+		apiV1.POST("/notify/sms", handler.SendSMS)
+		apiV1.GET("/notifications", handler.ListNotifications)
+		apiV1.GET("/notifications/count", handler.GetUnreadCount)
+		apiV1.GET("/notifications/:id", handler.GetNotification)
+		apiV1.PATCH("/notifications/:id", handler.MarkAsRead)
 	}
 
 	return &http.Server{
