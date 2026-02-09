@@ -42,6 +42,7 @@ type Config struct {
 	Logging         LoggingConfig   // Structured logging (Zap)
 	Metrics         MetricsConfig   // Prometheus metrics
 	Database        DatabaseConfig  // PostgreSQL database configuration
+	AuthServiceURL  string          // URL of the auth service - from AUTH_SERVICE_URL env
 	ShutdownTimeout int             // Graceful shutdown timeout in seconds - from SHUTDOWN_TIMEOUT env (default: 10)
 	// ReadinessDrainDelay: delay after failing readiness before shutting down the HTTP server.
 	// This gives Kubernetes/Service routing time to stop sending new traffic.
@@ -156,7 +157,8 @@ func Load() *Config {
 			PoolMode:       getEnv("DB_POOL_MODE", ""),
 			PoolerType:     getEnv("DB_POOLER_TYPE", ""),
 		},
-		ShutdownTimeout: getEnvDurationSeconds("SHUTDOWN_TIMEOUT", 10),
+		AuthServiceURL:      getEnv("AUTH_SERVICE_URL", "http://auth-service:8080"),
+		ShutdownTimeout:     getEnvDurationSeconds("SHUTDOWN_TIMEOUT", 10),
 		ReadinessDrainDelay: getEnvDurationSecondsWithMax("READINESS_DRAIN_DELAY", 5, 30),
 	}
 }
@@ -171,6 +173,7 @@ func (c *Config) Validate() error {
 	errs = append(errs, c.validateProfiling()...)
 	errs = append(errs, c.validateLogging()...)
 	errs = append(errs, c.validateDatabase()...)
+	errs = append(errs, c.validateAuth()...)
 
 	if len(errs) > 0 {
 		return fmt.Errorf("configuration validation failed:\n  - %s", strings.Join(errs, "\n  - "))
@@ -188,7 +191,7 @@ func (c *Config) validateService() []string {
 		errs = append(errs, "PORT is required (e.g., '8080')")
 	}
 	if _, err := strconv.Atoi(c.Service.Port); err != nil {
-		errs = append(errs, "PORT must be a valid number, got: " + c.Service.Port)
+		errs = append(errs, "PORT must be a valid number, got: "+c.Service.Port)
 	}
 	validEnvs := []string{"development", "dev", "staging", "stage", "production", "prod"}
 	if !contains(validEnvs, c.Service.Env) {
@@ -257,8 +260,16 @@ func (c *Config) validateDatabase() []string {
 	}
 	if c.Database.Port != "" {
 		if _, err := strconv.Atoi(c.Database.Port); err != nil {
-			errs = append(errs, "DB_PORT must be a valid number, got: " + c.Database.Port)
+			errs = append(errs, "DB_PORT must be a valid number, got: "+c.Database.Port)
 		}
+	}
+	return errs
+}
+
+func (c *Config) validateAuth() []string {
+	var errs []string
+	if c.AuthServiceURL == "" {
+		errs = append(errs, "AUTH_SERVICE_URL is required")
 	}
 	return errs
 }

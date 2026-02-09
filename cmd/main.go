@@ -56,8 +56,11 @@ func main() {
 	service := logicv1.NewNotificationService(repo)
 	handler := webv1.NewHandler(service)
 
+	// Auth Client
+	authClient := middleware.NewAuthClient(cfg.AuthServiceURL)
+
 	var isShuttingDown atomic.Bool
-	srv := setupServer(cfg, logger, &isShuttingDown, handler)
+	srv := setupServer(cfg, logger, &isShuttingDown, handler, authClient)
 	runGracefulShutdown(cfg, srv, tp, pool, logger, &isShuttingDown)
 }
 
@@ -90,7 +93,13 @@ func initProfiling(cfg *config.Config, logger *zap.Logger) {
 	logger.Info("Profiling initialized", zap.String("endpoint", cfg.Profiling.Endpoint))
 }
 
-func setupServer(cfg *config.Config, logger *zap.Logger, isShuttingDown *atomic.Bool, handler *webv1.Handler) *http.Server {
+func setupServer(
+	cfg *config.Config,
+	logger *zap.Logger,
+	isShuttingDown *atomic.Bool,
+	handler *webv1.Handler,
+	authClient *middleware.AuthClient,
+) *http.Server {
 	r := gin.Default()
 
 	r.Use(middleware.TracingMiddleware())
@@ -109,14 +118,22 @@ func setupServer(cfg *config.Config, logger *zap.Logger, isShuttingDown *atomic.
 	})
 	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
-	apiV1 := r.Group("/api/v1")
+	// Public (Authenticated) Routes
+	authV1 := r.Group("/api/v1")
+	authV1.Use(middleware.AuthMiddleware(authClient))
 	{
-		apiV1.POST("/notify/email", handler.SendEmail)
-		apiV1.POST("/notify/sms", handler.SendSMS)
-		apiV1.GET("/notifications", handler.ListNotifications)
-		apiV1.GET("/notifications/count", handler.GetUnreadCount)
-		apiV1.GET("/notifications/:id", handler.GetNotification)
-		apiV1.PATCH("/notifications/:id", handler.MarkAsRead)
+		authV1.GET("/notifications", handler.ListNotifications)
+		authV1.GET("/notifications/count", handler.GetUnreadCount)
+		authV1.GET("/notifications/:id", handler.GetNotification)
+		authV1.PATCH("/notifications/:id", handler.MarkAsRead)
+	}
+
+	// Internal Service-to-Service Routes (No User Auth)
+	// These endpoints are called by other services (e.g., order-service triggers email)
+	internalV1 := r.Group("/api/v1")
+	{
+		internalV1.POST("/notify/email", handler.SendEmail)
+		internalV1.POST("/notify/sms", handler.SendSMS)
 	}
 
 	return &http.Server{
