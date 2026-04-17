@@ -11,16 +11,16 @@ Notification microservice for email, SMS, and in-app notifications.
 
 ## API Endpoints
 
-> **Browser callers** hit `https://gateway.duynhne.me/notification/v1/private/notifications/…` (JWT required); Kong rewrites to the cluster paths below. `POST /api/v1/notify/{email,sms}` stays internal — service-to-service only. See [homelab naming convention](https://github.com/duynhlab/homelab/blob/main/docs/api/api-naming-convention.md).
+All routes follow Variant A naming — single path for browser and in-cluster callers. See [homelab naming convention](https://github.com/duynhlab/homelab/blob/main/docs/api/api-naming-convention.md).
 
-| Method | Cluster path | Edge path (via gateway) |
-|--------|--------------|-------------------------|
-| `GET` | `/api/v1/notifications` | `/notification/v1/private/notifications` |
-| `GET` | `/api/v1/notifications/count` | `/notification/v1/private/notifications/count` |
-| `GET` | `/api/v1/notifications/:id` | `/notification/v1/private/notifications/:id` |
-| `PATCH` | `/api/v1/notifications/:id` | `/notification/v1/private/notifications/:id` |
-| `POST` | `/api/v1/notify/email` | *(internal — not on gateway)* |
-| `POST` | `/api/v1/notify/sms` | *(internal — not on gateway)* |
+| Method | Path | Audience |
+|--------|------|----------|
+| `GET` | `/notification/v1/private/notifications` | private |
+| `GET` | `/notification/v1/private/notifications/count` | private |
+| `GET` | `/notification/v1/private/notifications/:id` | private |
+| `PATCH` | `/notification/v1/private/notifications/:id` | private |
+| `POST` | `/notification/v1/internal/notify/email` | internal (in-cluster only) |
+| `POST` | `/notification/v1/internal/notify/sms` | internal (in-cluster only) |
 
 ## Tech Stack
 

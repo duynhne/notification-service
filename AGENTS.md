@@ -25,29 +25,18 @@ notification-service/
 
 ## 🔌 API Endpoints
 
-### Cluster paths (what this service mounts)
+Routes are mounted directly at `/{service}/v1/{audience}/…` (Variant A — single URL shape). Kong is pure pass-through for `private`; `internal` is reachable only via service DNS.
 
-| Method | Cluster path | Audience | Description |
-|--------|--------------|----------|-------------|
-| `GET` | `/api/v1/notifications` | private | Get all notifications for the current user |
-| `GET` | `/api/v1/notifications/count` | private | Unread count (badge poll) |
-| `GET` | `/api/v1/notifications/:id` | private | Get notification by ID |
-| `PATCH` | `/api/v1/notifications/:id` | private | Mark as read |
-| `POST` | `/api/v1/notify/email` | internal | Send email — **in-cluster only, not on gateway** |
-| `POST` | `/api/v1/notify/sms` | internal | Send SMS — **in-cluster only, not on gateway** |
+| Method | Path | Audience | Description |
+|--------|------|----------|-------------|
+| `GET` | `/notification/v1/private/notifications` | private | Get all notifications for the current user |
+| `GET` | `/notification/v1/private/notifications/count` | private | Unread count (badge poll) |
+| `GET` | `/notification/v1/private/notifications/:id` | private | Get notification by ID |
+| `PATCH` | `/notification/v1/private/notifications/:id` | private | Mark as read |
+| `POST` | `/notification/v1/internal/notify/email` | internal | Send email — called by other services via `http://notification.notification.svc.cluster.local:8080` |
+| `POST` | `/notification/v1/internal/notify/sms` | internal | Send SMS — same (in-cluster only) |
 
-### Edge paths (what the browser sends)
-
-Kong in the `notification` namespace rewrites `/notification/v1/private/notifications/...` → `/api/v1/notifications/...`. The `notify/*` internal routes are deliberately not exposed; other services call them via `http://notification.notification.svc.cluster.local:8080/api/v1/notify/{email,sms}`.
-
-| Edge path (browser) | → Cluster path |
-|---------------------|----------------|
-| `GET gateway.duynhne.me/notification/v1/private/notifications` | `GET /api/v1/notifications` |
-| `GET gateway.duynhne.me/notification/v1/private/notifications/count` | `GET /api/v1/notifications/count` |
-| `GET \| PATCH gateway.duynhne.me/notification/v1/private/notifications/:id` | `/api/v1/notifications/:id` |
-| *(no edge path)* | `POST /api/v1/notify/{email,sms}` — internal only |
-
-Convention + rewrite rule: [`homelab/docs/api/api-naming-convention.md`](https://github.com/duynhlab/homelab/blob/main/docs/api/api-naming-convention.md).
+Full convention + inventory: [`homelab/docs/api/api-naming-convention.md`](https://github.com/duynhlab/homelab/blob/main/docs/api/api-naming-convention.md).
 
 ## 📐 3-Layer Architecture
 
